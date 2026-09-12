@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply font-body text-brand-ink;
+}
+
+.tilt-1 { transform: rotate(-4deg); }
+.tilt-2 { transform: rotate(3deg); }
+.tilt-3 { transform: rotate(-2deg); }
+.tilt-4 { transform: rotate(5deg); }
+
+.polaroid {
+  @apply bg-white p-2 pb-4 shadow-pop border-2 border-brand-ink;
+}
+
+::selection {
+  background: #0B0C0A;
+  color: #2FE070;
+}

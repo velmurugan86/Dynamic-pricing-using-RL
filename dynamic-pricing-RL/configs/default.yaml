@@ -1,0 +1,22 @@
+product:
+  product_id: sku-001
+
+  initial_price: 1000
+  initial_inventory: 300
+
+  minimum_price: 500
+  maximum_price: 2000
+
+  base_demand: 6
+  price_elasticity: 2.2
+  seasonality_strength: 0.2
+  demand_noise: 0.1
+
+  unit_cost: 600
+  holding_cost: 3.0
+  clearance_penalty: 40.0
+  elasticity_amplifier: 1.0
+
+environment:
+  max_steps: 100
+  seasonality_period: 30
