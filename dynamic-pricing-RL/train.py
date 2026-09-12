@@ -17,7 +17,7 @@ from dynamic_pricing.environment.pricing_env import (
 from dynamic_pricing.models.product import Product
 
 
-EPISODES = 800
+EPISODES = 5000
 MAX_STEPS = 100
 SEED = 42
 MODEL_PATH = "results/models/dqn.pt"
