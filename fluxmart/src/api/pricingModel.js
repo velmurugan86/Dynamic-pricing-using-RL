@@ -30,7 +30,7 @@
  *    If the env var is unset, confirmPriceApplied() is a no-op.
  */
 
-const PREDICT_URL = 'http://localhost:8000/api/predict'
+const PREDICT_URL = import.meta.env.VITE_DQN_PREDICT_URL
 const FEEDBACK_URL = import.meta.env.VITE_DQN_FEEDBACK_URL
 
 /**
