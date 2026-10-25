@@ -25,13 +25,19 @@
  *      "normalized_state": number[]
  *    }
  *
- *  Feedback endpoint (optional, POST via VITE_DQN_FEEDBACK_URL):
- *    Notifies the model of the applied outcome for logging / online training.
- *    If the env var is unset, confirmPriceApplied() is a no-op.
+ *  Feedback endpoint (POST localhost:8000/api/feedback):
+ *    Sends actual purchase outcomes back to the model for online
+ *    learning.  The agent trains on real interactions, not just
+ *    simulation data.
+ *
+ *  Training stats endpoint (GET localhost:8000/api/training-stats):
+ *    Returns the current training state (epsilon, buffer size,
+ *    loss, total feedback received).
  */
 
 const PREDICT_URL = import.meta.env.VITE_DQN_PREDICT_URL
 const FEEDBACK_URL = import.meta.env.VITE_DQN_FEEDBACK_URL
+const STATS_URL = import.meta.env.VITE_DQN_STATS_URL
 
 /**
  * Ask the DQN model for a new price for a single product.
@@ -74,10 +80,22 @@ export async function getRepricingSuggestion(product) {
 }
 
 /**
- * Tell the model what actually happened after we applied (or rejected)
- * its suggestion. Optional second route — no-ops if not configured.
+ * Send purchase outcome feedback to the model for online training.
+ *
+ * This is the critical "closing the loop" call: after a customer
+ * checks out, we tell the model what actually happened (how many
+ * units sold at what price, remaining inventory, etc.) so it can
+ * learn from real-world data.
+ *
+ * @param {Object} params
+ * @param {Object} params.product - The product row from the DB
+ * @param {number} params.oldPrice - Price before the model's suggestion
+ * @param {number} params.newPrice - Price that was actually applied
+ * @param {boolean} params.applied - Whether the suggestion was used
+ * @param {number} params.unitsSold - Actual units sold in this transaction
+ * @returns {Promise<Object|null>} Training feedback response or null
  */
-export async function confirmPriceApplied({ product, oldPrice, newPrice, applied }) {
+export async function confirmPriceApplied({ product, oldPrice, newPrice, applied, unitsSold = 0 }) {
   if (!FEEDBACK_URL) return null
 
   const res = await fetch(FEEDBACK_URL, {
@@ -87,7 +105,14 @@ export async function confirmPriceApplied({ product, oldPrice, newPrice, applied
       product_id: product.id,
       old_price: oldPrice,
       new_price: newPrice,
-      applied
+      applied,
+      units_sold: unitsSold,
+      remaining_inventory: product.inventory_count - unitsSold,
+      historical_demand: product.historical_demand ?? 0,
+      current_demand: product.current_demand ?? 0,
+      seasonality: product.seasonality_factor ?? 1.0,
+      price_elasticity: product.price_elasticity ?? 0,
+      demand_velocity: product.demand_velocity ?? 0
     })
   })
 
@@ -98,4 +123,21 @@ export async function confirmPriceApplied({ product, oldPrice, newPrice, applied
   }
 
   return res.json()
+}
+
+/**
+ * Fetch the current online training statistics from the model server.
+ *
+ * @returns {Promise<Object|null>} Training stats or null if unavailable
+ */
+export async function getTrainingStats() {
+  if (!STATS_URL) return null
+
+  try {
+    const res = await fetch(STATS_URL)
+    if (!res.ok) return null
+    return res.json()
+  } catch {
+    return null
+  }
 }

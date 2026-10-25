@@ -65,7 +65,13 @@ export function ProductsProvider({ children }) {
           })
           if (rpcError) throw rpcError
 
-          await confirmPriceApplied({ product, oldPrice: product.current_price, newPrice: new_price, applied: true })
+          await confirmPriceApplied({
+            product,
+            oldPrice: product.current_price,
+            newPrice: new_price,
+            applied: true,
+            unitsSold: 0  // No sale — this is a scheduled reprice
+          })
 
           return { ...product, current_price: new_price }
         })
@@ -97,6 +103,7 @@ export function ProductsProvider({ children }) {
     loading,
     error,
     lastRepricedAt,
+    repriceAll,  // Exposed so Cart can trigger immediate repricing after feedback
     updateProductPrice: (id, price) =>
       setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, current_price: price } : p))),
     /** Re-fetch products from the DB (after checkout decrements stock). */

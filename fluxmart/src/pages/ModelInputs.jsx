@@ -1,8 +1,8 @@
-﻿import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useProducts } from '../context/ProductsContext'
 import { supabase } from '../lib/supabaseClient'
 import { formatINR } from '../lib/formatINR'
-import { getRepricingSuggestion } from '../api/pricingModel'
+import { getRepricingSuggestion, getTrainingStats } from '../api/pricingModel'
 
 /**
  * Editable form for the DQN model input parameters, one product at a time.
@@ -56,6 +56,64 @@ const FIELDS = [
 
 function toInputValue(v) {
   return v === null || v === undefined ? '' : String(v)
+}
+
+/**
+ * Live training stats indicator — polls /api/training-stats every 10s
+ * and displays the model's online learning health.
+ */
+function TrainingStatsPanel() {
+  const [stats, setStats] = useState(null)
+
+  const fetchStats = useCallback(async () => {
+    const data = await getTrainingStats()
+    if (data) setStats(data)
+  }, [])
+
+  useEffect(() => {
+    fetchStats()
+    const interval = setInterval(fetchStats, 10_000) // poll every 10s
+    return () => clearInterval(interval)
+  }, [fetchStats])
+
+  if (!stats) return null
+
+  const isLearning = stats.total_feedback_received > 0
+
+  return (
+    <div className={`rounded-2xl border-2 px-5 py-4 ${
+      isLearning
+        ? 'border-green-400 bg-green-50'
+        : 'border-brand-ink/20 bg-brand-cream/60'
+    }`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`inline-block h-2.5 w-2.5 rounded-full ${
+          isLearning ? 'bg-green-500 animate-pulse' : 'bg-brand-ink/30'
+        }`} />
+        <p className="text-sm font-semibold text-brand-ink">
+          {isLearning ? 'Model is learning from live interactions' : 'Model awaiting first feedback'}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div>
+          <p className="text-brand-ink/50 font-medium">Exploration (ε)</p>
+          <p className="font-bold text-brand-ink">{(stats.epsilon * 100).toFixed(1)}%</p>
+        </div>
+        <div>
+          <p className="text-brand-ink/50 font-medium">Replay buffer</p>
+          <p className="font-bold text-brand-ink">{stats.buffer_size.toLocaleString()} transitions</p>
+        </div>
+        <div>
+          <p className="text-brand-ink/50 font-medium">Feedback received</p>
+          <p className="font-bold text-brand-ink">{stats.total_feedback_received}</p>
+        </div>
+        <div>
+          <p className="text-brand-ink/50 font-medium">Last loss</p>
+          <p className="font-bold text-brand-ink">{stats.last_loss != null ? stats.last_loss.toFixed(5) : '—'}</p>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function ModelInputs() {
@@ -302,6 +360,9 @@ export default function ModelInputs() {
         </p>
       </div>
 
+      {/* Live training stats indicator */}
+      <TrainingStatsPanel />
+
       {/* Main model inputs form */}
       <form
         onSubmit={handleSave}
@@ -494,7 +555,7 @@ export default function ModelInputs() {
                     className="w-full rounded-lg border-2 border-brand-ink px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-green"
                   />
                   <p className="mt-1 text-xs text-brand-ink/50">
-                    Enter the exact total stock that should be on hand (integer >= 0).
+                    Enter the exact total stock that should be on hand (integer {'>='} 0).
                   </p>
                 </div>
                 <button
