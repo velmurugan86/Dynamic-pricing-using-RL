@@ -1,204 +1,268 @@
-# Dynamic Pricing Simulator
+# Dynamic Pricing RL Engine & FastAPI Microservice
 
-A Gymnasium-based simulation environment for dynamic product pricing, with a
-FastAPI backend and a React dashboard for visualizing pricing episodes. The
-simulator is RL-ready: it speaks the standard `gym.Env` interface, so an agent
-(PPO / DQN / SAC) can be plugged in later. The web UI ships with two built-in
-rule-based policies (random and greedy) to explore the environment today.
+> **Component:** Core Reinforcement Learning Engine & Inference API  
+> **Ecosystem:** [Dynamic Pricing RL Ecosystem](../README.md)  
+> **Sibling Subsystems:** [Fluxmart Storefront](../fluxmart/README.md) · [Simulator Dashboard](frontend/README.md)
 
-## What's inside
+A Gymnasium-compatible reinforcement learning environment, custom **Dueling DQN** neural network agent, offline training/benchmarking pipeline, and production-grade **FastAPI microservice** for dynamic product pricing with real-time online continuous learning.
 
-### Simulation core (`src/dynamic_pricing/`)
+---
 
-| Module | What it does |
-|--------|--------------|
-| `models/product.py` | `Product` dataclass: price bounds, inventory, base demand, elasticity, seasonality strength, demand noise. Validates itself on creation (rejects negative inventory, out-of-bounds prices, etc.). |
-| `simulation/demand.py` | Pure-math demand model, no ML. `demand = base_demand × price_effect × seasonality × noise`, clipped at 0. `price_effect` is a constant-elasticity curve `(price / initial_price) ** -elasticity`; `seasonality` is a sine wave over a 30-step cycle. |
-| `environment/pricing_env.py` | `DynamicPricingEnv(gym.Env)`, the RL-ready environment. |
-| `api/app.py` | FastAPI app exposing the simulator over HTTP. |
-| `api/schemas.py` | Pydantic request/response schemas. |
-| `api/policies.py` | Action-selection policies (`random`, `greedy`). An RL agent registers here. |
+## 📑 Table of Contents
 
-### Environment interface
+- [Component Role in Ecosystem](#component-role-in-ecosystem)
+- [Key Features](#key-features)
+- [Directory Structure](#directory-structure)
+- [Reinforcement Learning Architecture](#reinforcement-learning-architecture)
+  - [1. Gymnasium Environment (`DynamicPricingEnv`)](#1-gymnasium-environment-dynamicpricingenv)
+  - [2. Dueling DQN Architecture (`dqn.py`)](#2-dueling-dqn-architecture-dqnpy)
+  - [3. Experience Replay & DQNAgent (`agent.py`)](#3-experience-replay--dqnagent-agentpy)
+  - [4. Reward Function & Shaping](#4-reward-function--shaping)
+- [Continuous Online Learning Loop](#continuous-online-learning-loop)
+- [Training & Policy Evaluation](#training--policy-evaluation)
+- [FastAPI Service & Endpoints](#fastapi-service--endpoints)
+- [Configuration (`configs/default.yaml`)](#configuration-configsdefaultyaml)
+- [Setup & Execution](#setup--execution)
+- [Testing & Quality Assurance](#testing--quality-assurance)
 
-**Observation** — `Box`, shape `(7,)`, float32:
+---
 
-```
-[current_price, remaining_inventory, historical_demand,
- current_demand, seasonality, price_elasticity, demand_velocity]
-```
+## Component Role in Ecosystem
 
-**Action** — `Discrete(5)`:
+Within the dynamic pricing architecture, `dynamic-pricing-RL` serves as the intelligence core:
+- **For Researchers & Developers:** It provides an interactive simulation environment and benchmarking suite comparing the DQN agent against Random, Fixed-Price, and Oracle policies.
+- **For Fluxmart E-Commerce:** It acts as an active pricing oracle. It receives live product demand metrics over HTTP, predicts optimal pricing changes, and continuously improves its policy through online experience replay when customer transactions occur.
 
-| Action | Effect |
-|--------|--------|
-| 0 | decrease price 10% |
-| 1 | decrease price 5% |
-| 2 | hold price |
-| 3 | increase price 5% |
-| 4 | increase price 10% |
+---
 
-**Reward** — `revenue = price × units_sold` (no shaping).
+## Key Features
 
-**Episode end** — `terminated=True` when inventory sells out; `truncated=True`
-when `max_steps` is reached. Price is always clamped to
-`[minimum_price, maximum_price]`, inventory and demand never go negative, and
-everything is seedable for reproducible runs. Both the demand-noise RNG and the
-action-space RNG are seeded, so the same seed reproduces an episode exactly.
+- **Gymnasium-Compliant Simulation**: Implements `gym.Env` with clean observation spaces, discrete action spaces, and deterministic seeding for reproducible experiments.
+- **Realistic Demand Modeling**: Integrates constant-elasticity price curves, sinusoidal seasonality cycles (30 timesteps), and Gaussian demand noise.
+- **Dueling DQN with Layer Normalization**: Features separate state-value $V(s)$ and advantage $A(s, a)$ heads to stabilize training during small-batch online updates.
+- **Continuous Online Learning**: The live agent stays resident in memory during serving. As purchases are completed in Fluxmart, checkout feedback is pushed directly into the replay buffer, triggering live gradient descent steps.
+- **High-Performance FastAPI Server**: Exposes low-latency prediction, simulation, and telemetry endpoints with CORS enabled for client frontends.
+- **Offline Training & Benchmarking Suite**: Automated scripts (`train.py`, `evaluate.py`, `plot_demand_price.py`) to pre-train policies, export evaluation logs, and visualize price-demand response curves.
 
-### Web dashboard (`frontend/`)
+---
 
-React 19 + Vite + TypeScript + Recharts. From the dashboard you can:
-
-- Edit all product parameters (initial price, inventory, price bounds, base
-  demand, elasticity, seasonality, noise) without touching YAML
-- Pick a policy (`random` / `greedy`), set the greedy margin, seed, and
-  episode length
-- Run an episode and see: summary cards (total revenue, units sold /
-  sell-through, average price, steps, sold-out vs time-up), a price + demand
-  chart with price floor/cap reference lines, per-step and cumulative revenue,
-  inventory remaining, and a full step-by-step episode log
-
-## Project structure
+## Directory Structure
 
 ```text
-dynamic-pricing/
-├── README.md
-├── pyproject.toml
-├── uv.lock
-├── .gitignore
+dynamic-pricing-RL/
+├── README.md                           # ← This File
+├── pyproject.toml                      # Dependencies & package configuration
+├── uv.lock                             # Pinned uv lockfile
+├── train.py                            # Offline DQN training script
+├── evaluate.py                         # Multi-policy benchmark runner
+├── plot_demand_price.py                # Demand-price state curve plotting tool
 ├── configs/
-│   └── default.yaml
+│   └── default.yaml                    # Product & environment hyperparameters
+├── results/
+│   ├── dqn_policy.csv                  # Exported policy action distributions
+│   ├── training_log.csv                # Per-episode reward, loss, & epsilon log
+│   └── models/
+│       └── dqn.pt                      # Saved PyTorch model checkpoint
 ├── src/dynamic_pricing/
-│   ├── __init__.py
-│   ├── environment/pricing_env.py
-│   ├── simulation/demand.py
-│   ├── models/product.py
+│   ├── models/
+│   │   └── product.py                  # Product dataclass & constraint validation
+│   ├── simulation/
+│   │   └── demand.py                   # Constant elasticity & seasonality demand engine
+│   ├── environment/
+│   │   └── pricing_env.py              # DynamicPricingEnv(gym.Env) implementation
+│   ├── agent/
+│   │   ├── dqn.py                      # Dueling DQN network definition
+│   │   ├── replay_buffer.py            # Cyclic experience replay memory
+│   │   └── agent.py                    # DQNAgent training & inference logic
 │   └── api/
-│       ├── __init__.py
-│       ├── app.py
-│       ├── schemas.py
-│       └── policies.py
-├── examples/
-│   └── random_agent.py
+│       ├── app.py                      # FastAPI application & route controllers
+│       ├── schemas.py                  # Pydantic schema validation models
+│       └── policies.py                 # Action selection policies (random, fixed, oracle)
 ├── tests/
-│   ├── test_environment.py
-│   ├── test_demand.py
-│   └── test_api.py
-└── frontend/
-    ├── index.html
-    ├── package.json
-    ├── vite.config.ts
-    └── src/
-        ├── main.tsx
-        ├── App.tsx
-        ├── api.ts
-        ├── types.ts
-        └── components/
-            ├── ControlPanel.tsx
-            ├── SummaryCards.tsx
-            ├── PriceDemandChart.tsx
-            ├── RevenueChart.tsx
-            ├── InventoryChart.tsx
-            └── EpisodeTable.tsx
+│   ├── test_environment.py             # Gymnasium environment assertions
+│   ├── test_demand.py                  # Demand curve & seasonality tests
+│   └── test_api.py                     # FastAPI endpoint integration tests
+└── frontend/                           # Sibling Dashboard (React 19 + TypeScript)
 ```
 
-## Setup
+---
 
-Requirements: [uv](https://docs.astral.sh/uv/) (Python) and Node.js ≥ 18
-(frontend).
+## Reinforcement Learning Architecture
+
+### 1. Gymnasium Environment (`DynamicPricingEnv`)
+
+- **Observation Space**: `Box(7,)`, `float32`, continuous:
+  1. `current_price`: Current product selling price.
+  2. `remaining_inventory`: Units currently remaining in stock.
+  3. `historical_demand`: Moving average or baseline demand level.
+  4. `current_demand`: Demand realized in the preceding step.
+  5. `seasonality`: Current seasonal multiplier factor (sinusoidal).
+  6. `price_elasticity`: Sensitivity of demand to price shifts ($\epsilon$).
+  7. `demand_velocity`: Rate of change of demand over time.
+
+- **Action Space**: `Discrete(5)`:
+  | Action Index | Label | Price Multiplier | Description |
+  |:---:|:---:|:---:|---|
+  | `0` | `-10%` | `0.90` | Aggressive markdown |
+  | `1` | `-5%` | `0.95` | Moderate markdown |
+  | `2` | `Hold` | `1.00` | Maintain price |
+  | `3` | `+5%` | `1.05` | Moderate markup |
+  | `4` | `+10%` | `1.10` | Aggressive markup |
+
+- **Demand Dynamics Formula**:
+  $$\text{Demand} = \max\left(0, \text{base\_demand} \times \left(\frac{\text{price}}{\text{initial\_price}}\right)^{-\text{elasticity}} \times \text{seasonality} \times \text{noise}\right)$$
+  - Clamped to integer units.
+  - Price is bound within $[\text{minimum\_price}, \text{maximum\_price}]$.
+
+### 2. Dueling DQN Architecture (`dqn.py`)
+
+Standard DQN estimates $Q(s, a)$ directly. In dynamic pricing, certain market states are inherently high-value or low-value regardless of immediate price shifts. The Dueling architecture decomposes the representation:
+
+- **Feature Extractor**:
+  - `Linear(state_size, 256)` $\to$ `LayerNorm(256)` $\to$ `ReLU()`
+  - `Linear(256, 256)` $\to$ `LayerNorm(256)` $\to$ `ReLU()`
+- **Value Stream $V(s)$**:
+  - `Linear(256, 128)` $\to$ `ReLU()` $\to$ `Linear(128, 1)`
+- **Advantage Stream $A(s, a)$**:
+  - `Linear(256, 128)` $\to$ `ReLU()` $\to$ `Linear(128, action_size)`
+- **Aggregation**:
+  $$Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|\mathcal{A}|} \sum_{a'} A(s, a')\right)$$
+
+*Layer normalization is critical here to prevent exploding gradients when updating weights on single online transitions.*
+
+### 3. Experience Replay & DQNAgent (`agent.py`)
+
+- **Replay Buffer**: Holds up to 50,000 transitions `(s, a, r, s', done)`.
+- **Target Network**: Periodically updated (every 100–250 steps) to prevent bootstrap divergence.
+- **Exploration Policy**: $\epsilon$-greedy schedule with decay ($\epsilon_{\text{start}} = 1.0 \to \epsilon_{\text{min}} = 0.03 \text{ to } 0.05$).
+
+### 4. Reward Function & Shaping
+
+During training and online feedback, the agent optimizes economic profitability:
+
+$$\text{Reward} = \frac{\text{Profit} + \text{Penalties}}{\text{initial\_price}}$$
+
+Where:
+- $\text{Revenue} = \text{price} \times \text{units\_sold}$
+- $\text{Cost} = \text{unit\_cost} \times \text{units\_sold}$
+- $\text{Holding Cost} = \text{holding\_cost\_per\_unit} \times \text{remaining\_inventory}$
+- $\text{Profit} = \text{Revenue} - \text{Cost} - \text{Holding Cost}$
+- $\text{Zero-Sale Penalty}$: Applied if $\text{units\_sold} = 0$ when inventory was available (penalizing uncompetitive overpricing).
+- Scaled by `initial_price` for stable neural network gradients.
+
+---
+
+## Continuous Online Learning Loop
+
+Unlike traditional static offline models, the live FastAPI service retains a singleton `DQNAgent` instance in memory.
+
+1. **State Normalization**: When `/api/predict` or `/api/feedback` is called, state values are normalized using baseline product parameters.
+2. **Exploration**: Live predictions use $\epsilon$-greedy action selection ($\epsilon \approx 0.05$) to explore promising price regimes.
+3. **Transaction Feedback**: When an order executes on the storefront, `POST /api/feedback` delivers the actual purchase outcome.
+4. **Online Training Step**: The transition is pushed to the buffer, a mini-batch is sampled, Huber/MSE loss is calculated, and an Adam optimizer step is executed.
+5. **Auto-Checkpointing**: Every 50 online updates, model weights are saved automatically to `results/models/dqn.pt`.
+
+---
+
+## Training & Policy Evaluation
+
+### Offline Pretraining (`train.py`)
+
+Trains the agent for 1,000 episodes against the simulated demand environment:
 
 ```bash
-uv sync
+uv run python train.py
 ```
 
-This creates `.venv/` and installs the Python environment from
-`pyproject.toml`, pinned by `uv.lock`, reproducibly on any machine with `uv`.
+Outputs:
+- Checkpoint weights: `results/models/dqn.pt`
+- Training metrics log: `results/training_log.csv`
 
-Frontend dependencies:
+### Policy Benchmarking (`evaluate.py`)
+
+Evaluates and compares policies over 20 randomized seeds:
+- **`dqn`**: Learned Dueling DQN policy.
+- **`oracle`**: Lookahead agent evaluating 50 Monte Carlo demand simulations per candidate action.
+- **`fixed`**: Static hold price policy.
+- **`random`**: Uniform random price actions.
 
 ```bash
-cd frontend
-npm install
+uv run python evaluate.py
 ```
 
-## Running
+Outputs summary statistics and saves the full action distribution to `results/dqn_policy.csv`.
 
-### 1. Start the backend (port 8000)
+### Demand Curve Plotting (`plot_demand_price.py`)
 
-From the project root:
+```bash
+uv run python plot_demand_price.py
+```
+
+Renders plots of price elasticity and demand response curves across 500 state evaluations.
+
+---
+
+## FastAPI Service & Endpoints
+
+Run the server:
 
 ```bash
 uv run uvicorn dynamic_pricing.api.app:app --reload --port 8000
 ```
 
-- API health check: http://127.0.0.1:8000/api/health
-- Interactive API docs (Swagger): http://127.0.0.1:8000/docs
+### Endpoints
 
-### 2. Start the frontend (port 5173)
+#### 1. `GET /api/health`
+Verifies service availability, model readiness, online steps completed, and total feedback received.
 
-```bash
-cd frontend
-npm run dev
-```
-
-Open http://localhost:5173. The Vite dev server proxies `/api/*` requests to
-the backend at `http://127.0.0.1:8000`, so no CORS setup is needed for local
-development.
-
-### 3. Terminal-only alternative
-
-Run one episode with random actions straight from the CLI:
-
-```bash
-uv run python examples/random_agent.py
-```
-
-## API reference
-
-### `GET /api/health`
-
-Returns `{"status": "ok"}`.
-
-### `GET /api/config`
-
-Returns the default product and environment configuration from
-`configs/default.yaml`, plus available policies and action labels.
-
-### `POST /api/simulate`
-
-Runs one episode and returns every step plus a summary.
-
-Request body (all fields optional except `policy` defaults to `"random"`):
+#### 2. `POST /api/predict`
+Accepts a 7-feature product state and returns the selected action, updated price, price change percentage, and Q-values for all 5 actions.
 
 ```json
+// Request
 {
-  "product": { "base_demand": 25.0, "initial_inventory": 200 },
-  "max_steps": 100,
-  "seasonality_period": 30,
-  "seed": 42,
-  "policy": "greedy",
-  "greedy_margin": 0.10
+  "current_price": 1000.0,
+  "remaining_inventory": 85,
+  "historical_demand": 20.0,
+  "current_demand": 18.0,
+  "seasonality": 1.1,
+  "price_elasticity": 1.5,
+  "demand_velocity": 0.2
 }
 ```
 
-- `product` is a **partial override**: any field you omit falls back to
-  `configs/default.yaml`
-- `seed: null` or omitted gives a different random episode each run; a fixed
-  seed reproduces the exact same episode
-- `policy` is `"random"` or `"greedy"`; `greedy_margin` bounds how far above
-  the initial price the greedy policy is willing to push
+#### 3. `POST /api/feedback`
+Ingests real transaction feedback to train the model online.
 
-Response contains `summary` (total revenue, steps, units sold, price stats,
-terminated/truncated flags), `steps` (one record per timestep: action, price,
-demand, units sold, inventory, revenue, cumulative revenue), and the resolved
-`product`.
+```json
+// Request
+{
+  "product_id": "sku-001",
+  "old_price": 1000.0,
+  "new_price": 950.0,
+  "units_sold": 2,
+  "remaining_inventory": 83,
+  "historical_demand": 20.0,
+  "current_demand": 18.0,
+  "seasonality": 1.1,
+  "price_elasticity": 1.5,
+  "demand_velocity": 0.2,
+  "applied": true
+}
+```
 
-Validation errors (unknown policy, invalid product values) return HTTP 422.
+#### 4. `GET /api/training-stats`
+Returns live training metrics: buffer size, epsilon, last training loss, total feedback received, and checkpoint path.
 
-## Configuration
+#### 5. `GET /api/config`
+Returns default product settings from `configs/default.yaml`, available policies, action labels, and live online learning status.
 
-`configs/default.yaml` is the single place to change defaults:
+#### 6. `POST /api/simulate`
+Executes an entire simulated episode (up to `max_steps`) using a specified policy (`random`, `fixed`, `oracle`) with optional parameter overrides, returning step-by-step logs and summary metrics.
+
+---
+
+## Configuration (`configs/default.yaml`)
 
 ```yaml
 product:
@@ -211,6 +275,8 @@ product:
   price_elasticity: 1.5
   seasonality_strength: 0.2
   demand_noise: 0.1
+  unit_cost: 600.0
+  holding_cost: 2.0
 
 environment:
   max_steps: 100
@@ -218,27 +284,31 @@ environment:
   seed: 42
 ```
 
-Both the CLI example and the API load defaults from here; the dashboard lets
-you override them per-run without editing the file.
+---
 
-## Testing
+## Setup & Execution
 
-Run all tests (simulator + API):
+### 1. Requirements
+- Python ≥ 3.10
+- [uv package manager](https://docs.astral.sh/uv/)
+
+### 2. Installation
+```bash
+cd dynamic-pricing-RL
+uv sync
+```
+
+### 3. Launching
+```bash
+uv run uvicorn dynamic_pricing.api.app:app --reload --port 8000
+```
+
+---
+
+## Testing & Quality Assurance
+
+Run the automated test suite covering the simulation environment, demand math, and FastAPI endpoints:
 
 ```bash
 uv run pytest
 ```
-
-Frontend type check:
-
-```bash
-cd frontend
-npx tsc --noEmit
-```
-
-## Not built yet
-
-- RL agent (PPO / DQN / SAC) trained against the environment — the
-  `policies.py` registry is the plug-in point
-- Learned demand model
-- Reward shaping beyond raw revenue (e.g. holding costs, stockout penalties)
