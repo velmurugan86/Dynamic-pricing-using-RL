@@ -5,10 +5,11 @@ import { useAuth } from '../context/AuthContext'
 import { useProducts } from '../context/ProductsContext'
 import { supabase } from '../lib/supabaseClient'
 import { formatINR } from '../lib/formatINR'
+import { confirmPriceApplied } from '../api/pricingModel'
 
 export default function Cart() {
   const { items, setQty, removeItem, clear, total } = useCart()
-  const { refresh } = useProducts()
+  const { products, refresh, repriceAll } = useProducts()
   const { user } = useAuth()
   const [placing, setPlacing] = useState(false)
   const [placed, setPlaced] = useState(null)
@@ -24,6 +25,32 @@ export default function Cart() {
         p_items: items.map((i) => ({ product_id: i.id, quantity: i.qty, unit_price: i.current_price }))
       })
       if (rpcError) throw rpcError
+
+      // --- Online learning: send purchase feedback to the model ---
+      // For each item in the cart, notify the model of the actual
+      // sale outcome so it can learn from real customer behaviour.
+      const feedbackPromises = items.map((item) => {
+        // Find the full product record for context fields
+        const fullProduct = products.find((p) => p.id === item.id) || item
+        return confirmPriceApplied({
+          product: fullProduct,
+          oldPrice: fullProduct.base_price ?? fullProduct.current_price,
+          newPrice: fullProduct.current_price,
+          applied: true,
+          unitsSold: item.qty,
+        }).catch((err) => {
+          // Don't block checkout if feedback fails
+          console.warn('Feedback for', item.name, 'failed:', err.message)
+          return null
+        })
+      })
+
+      // Fire feedback in parallel — don't block the checkout UX
+      Promise.allSettled(feedbackPromises).then(() => {
+        // After feedback is sent, trigger an immediate reprice cycle
+        // so the model can update prices based on what it just learned.
+        repriceAll()
+      })
 
       setPlaced({ orderId, count: items.length, total })
       // Pull fresh stock counts into the UI immediately — the order
@@ -44,6 +71,9 @@ export default function Cart() {
         <p className="text-brand-ink/70 font-medium mb-2">
           {placed.count} item{placed.count === 1 ? '' : 's'} ordered — total{' '}
           {formatINR(placed.total ?? 0)}. This is a demo, so no payment was taken.
+        </p>
+        <p className="text-xs text-brand-ink/40 mb-1">
+          The model is now learning from your purchase to improve future pricing.
         </p>
         <p className="text-xs text-brand-ink/50 mb-8">Order ref: {placed.orderId}</p>
         <div className="flex items-center justify-center gap-3">
@@ -69,7 +99,7 @@ export default function Cart() {
       <section className="mx-auto max-w-2xl px-6 py-24 text-center">
         <h1 className="font-display text-4xl mb-4">Your cart is empty</h1>
         <p className="text-brand-ink/70 font-medium mb-8">
-          Head to the shop and add something — prices update every hour.
+          Head to the shop and add something — prices update dynamically based on demand.
         </p>
         <Link
           to="/shop"

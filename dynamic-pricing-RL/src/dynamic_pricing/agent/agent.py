@@ -1,4 +1,5 @@
 import random
+import logging
 
 import numpy as np
 import torch
@@ -7,6 +8,8 @@ import torch.optim as optim
 
 from dynamic_pricing.agent.dqn import DQN
 from dynamic_pricing.agent.replay_buffer import ReplayBuffer
+
+logger = logging.getLogger(__name__)
 
 
 class DQNAgent:
@@ -65,6 +68,11 @@ class DQNAgent:
         self.replay_buffer = ReplayBuffer(buffer_size)
 
         self.steps = 0
+
+        # --- Online learning tracking ---
+        self.total_feedback_received = 0
+        self.last_loss = None
+        self.checkpoint_interval = 10  # Save after every N feedback items
 
     def select_action(self, state, training=True):
 
@@ -126,11 +134,17 @@ class DQNAgent:
             1, actions
         ).squeeze(1)
 
-        # max Q(s', a')
+        # Double DQN: use policy_net to SELECT the best action,
+        # but target_net to EVALUATE its Q-value. This reduces
+        # overestimation bias, which is critical for online learning
+        # where data is non-stationary.
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(
-                dim=1
-            ).values
+            next_actions = self.policy_net(next_states).argmax(
+                dim=1, keepdim=True
+            )
+            next_q = self.target_net(next_states).gather(
+                1, next_actions
+            ).squeeze(1)
 
             target_q = rewards + (
                 self.gamma * next_q * (1 - dones)
@@ -153,11 +167,34 @@ class DQNAgent:
         self.optimizer.step()
 
         self.steps += 1
+        self.last_loss = loss.item()
 
         if self.steps % self.target_update == 0:
             self.update_target_network()
 
         return loss.item()
+
+    def process_feedback(self, state, action, reward, next_state, done):
+        """Process a single feedback interaction from the website.
+
+        This is the core of the online learning loop:
+        1. Push the real-world transition into the replay buffer
+        2. Run a training step (if buffer has enough samples)
+        3. Decay epsilon to gradually reduce exploration
+        4. Track statistics
+
+        Returns the training loss (or None if buffer too small).
+        """
+        self.replay_buffer.push(state, action, reward, next_state, done)
+        self.total_feedback_received += 1
+
+        loss = self.train_step()
+
+        # Gentle epsilon decay on each feedback — slower than offline
+        # training since real interactions are scarce and valuable.
+        self.decay_epsilon()
+
+        return loss
 
     def update_target_network(self):
         self.target_net.load_state_dict(
@@ -178,9 +215,11 @@ class DQNAgent:
                 "optimizer": self.optimizer.state_dict(),
                 "epsilon": self.epsilon,
                 "steps": self.steps,
+                "total_feedback_received": self.total_feedback_received,
             },
             path
         )
+        logger.info("Model checkpoint saved to %s (step %d)", path, self.steps)
 
     def load(self, path):
 
@@ -203,6 +242,18 @@ class DQNAgent:
 
         self.epsilon = checkpoint["epsilon"]
         self.steps = checkpoint["steps"]
+        self.total_feedback_received = checkpoint.get(
+            "total_feedback_received", 0
+        )
+
+    def should_checkpoint(self):
+        """Return True if enough feedback has been received to warrant
+        saving a checkpoint."""
+        return (
+            self.total_feedback_received > 0
+            and self.total_feedback_received % self.checkpoint_interval == 0
+        )
+
 
 def normalize_state(state, env):
 

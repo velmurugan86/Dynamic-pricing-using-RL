@@ -17,9 +17,9 @@ from dynamic_pricing.environment.pricing_env import (
 from dynamic_pricing.models.product import Product
 
 
-EPISODES = 5000
-MAX_STEPS = 100
-SEED = 42
+EPISODES = 1000
+MAX_STEPS = 3
+SEED = 44
 MODEL_PATH = "results/models/dqn.pt"
 TRAINING_LOG = "results/training_log.csv"
 
